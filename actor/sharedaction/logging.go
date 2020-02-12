@@ -135,7 +135,6 @@ func GetStreamingLogs(appGUID string, client LogCacheClient) (<-chan LogMessage,
 			err                 error
 		)
 
-		// TODO make this a separate function, and try to simplify the "double check" (do...while?)
 		for len(mostRecentEnvelopes) == 0 {
 			mostRecentEnvelopes, err = client.Read(
 				ctx,

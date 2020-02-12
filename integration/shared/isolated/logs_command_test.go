@@ -108,7 +108,7 @@ var _ = FDescribe("logs command", func() {
 						if returnEmptyEnvelope {
 							_, err := w.Write([]byte(`{}`))
 							Expect(err).ToNot(HaveOccurred())
-							returnEmptyEnvelope = false // TODO explain this
+							returnEmptyEnvelope = false // Allow the CLI to continue after receiving an empty envelope
 						} else {
 							_, err := w.Write([]byte(fmt.Sprintf(`
 						{

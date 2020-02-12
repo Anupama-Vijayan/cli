@@ -79,45 +79,53 @@ var _ = Describe("Logging Actions", func() {
 
 		When("receiving logs", func() {
 			BeforeEach(func() {
+				mostRecentEnvelope := &loggregator_v2.Envelope{
+					// 2 seconds in the past to get past Walk delay
+					Timestamp:  time.Now().Add(-2 * time.Second).UnixNano(),
+					SourceId:   "some-app-guid",
+					InstanceId: "some-source-instance",
+					Message: &loggregator_v2.Envelope_Log{
+						Log: &loggregator_v2.Log{
+							Payload: []byte("message-2"),
+							Type:    loggregator_v2.Log_OUT,
+						},
+					},
+					Tags: map[string]string{
+						"source_type": "some-source-type",
+					},
+				}
+
+				slightlyOlderEnvelope := &loggregator_v2.Envelope{
+					// 3 seconds in the past to get past Walk delay
+					Timestamp:  time.Now().Add(-3 * time.Second).UnixNano(),
+					SourceId:   "some-app-guid",
+					InstanceId: "some-source-instance",
+					Message: &loggregator_v2.Envelope_Log{
+						Log: &loggregator_v2.Log{
+							Payload: []byte("message-1"),
+							Type:    loggregator_v2.Log_OUT,
+						},
+					},
+					Tags: map[string]string{
+						"source_type": "some-source-type",
+					},
+				}
+
 				fakeLogCacheClient.ReadStub = func(
 					ctx context.Context,
 					sourceID string,
 					start time.Time,
 					opts ...logcache.ReadOption,
 				) ([]*loggregator_v2.Envelope, error) {
-					if fakeLogCacheClient.ReadCallCount() > 2 {
+					if fakeLogCacheClient.ReadCallCount() > 3 {
 						stopStreaming()
 					}
 
-					return []*loggregator_v2.Envelope{{
-						// 2 seconds in the past to get past Walk delay
-						Timestamp:  time.Now().Add(-3 * time.Second).UnixNano(),
-						SourceId:   "some-app-guid",
-						InstanceId: "some-source-instance",
-						Message: &loggregator_v2.Envelope_Log{
-							Log: &loggregator_v2.Log{
-								Payload: []byte("message-1"),
-								Type:    loggregator_v2.Log_OUT,
-							},
-						},
-						Tags: map[string]string{
-							"source_type": "some-source-type",
-						},
-					}, {
-						// 2 seconds in the past to get past Walk delay
-						Timestamp:  time.Now().Add(-2 * time.Second).UnixNano(),
-						SourceId:   "some-app-guid",
-						InstanceId: "some-source-instance",
-						Message: &loggregator_v2.Envelope_Log{
-							Log: &loggregator_v2.Log{
-								Payload: []byte("message-2"),
-								Type:    loggregator_v2.Log_OUT,
-							},
-						},
-						Tags: map[string]string{
-							"source_type": "some-source-type",
-						},
-					}}, ctx.Err()
+					if (start == time.Time{}) {
+						return []*loggregator_v2.Envelope{mostRecentEnvelope}, ctx.Err()
+					}
+
+					return []*loggregator_v2.Envelope{slightlyOlderEnvelope, mostRecentEnvelope}, ctx.Err()
 				}
 			})
 
