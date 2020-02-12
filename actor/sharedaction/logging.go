@@ -130,15 +130,27 @@ func GetStreamingLogs(appGUID string, client LogCacheClient) (<-chan LogMessage,
 		defer close(outgoingLogStream)
 		defer close(outgoingErrStream)
 
-		mostRecentEnvelope, err := client.Read(
-			ctx,
-			appGUID,
-			time.Time{},
-			logcache.WithLimit(1),
-			logcache.WithDescending(),
+		var (
+			mostRecentEnvelopes []*loggregator_v2.Envelope
+			err                 error
 		)
-		if err != nil {
-			outgoingErrStream <- err
+
+		// TODO make this a separate function, and try to simplify the "double check" (do...while?)
+		for len(mostRecentEnvelopes) == 0 {
+			mostRecentEnvelopes, err = client.Read(
+				ctx,
+				appGUID,
+				time.Time{},
+				logcache.WithLimit(1),
+				logcache.WithDescending(),
+			)
+			if err != nil {
+				outgoingErrStream <- err
+			}
+
+			if len(mostRecentEnvelopes) == 0 {
+				time.Sleep(time.Second)
+			}
 		}
 
 		logcache.Walk(
@@ -158,7 +170,7 @@ func GetStreamingLogs(appGUID string, client LogCacheClient) (<-chan LogMessage,
 				return true
 			}),
 			client.Read,
-			logcache.WithWalkStartTime(time.Unix(0, mostRecentEnvelope[0].Timestamp-time.Second.Nanoseconds())),
+			logcache.WithWalkStartTime(time.Unix(0, mostRecentEnvelopes[0].Timestamp-time.Second.Nanoseconds())),
 			logcache.WithWalkEnvelopeTypes(logcache_v1.EnvelopeType_LOG),
 			logcache.WithWalkBackoff(newCliRetryBackoff(retryInterval, retryCount)),
 			logcache.WithWalkLogger(log.New(channelWriter{

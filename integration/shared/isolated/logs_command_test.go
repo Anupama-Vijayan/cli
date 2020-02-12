@@ -90,6 +90,7 @@ var _ = FDescribe("logs command", func() {
 	Describe("streaming logs", func() {
 
 		const logMessage = "hello from log-cache"
+		var returnEmptyEnvelope bool
 
 		BeforeEach(func() {
 			latestEnvelopeTimestamp := "1581447006352020890"
@@ -104,7 +105,12 @@ var _ = FDescribe("logs command", func() {
 					w.WriteHeader(http.StatusOK)
 					switch r.URL.RawQuery {
 					case fmt.Sprintf("descending=true&limit=1&start_time=%s", strconv.FormatInt(time.Time{}.UnixNano(), 10)):
-						_, err := w.Write([]byte(fmt.Sprintf(`
+						if returnEmptyEnvelope {
+							_, err := w.Write([]byte(`{}`))
+							Expect(err).ToNot(HaveOccurred())
+							returnEmptyEnvelope = false // TODO explain this
+						} else {
+							_, err := w.Write([]byte(fmt.Sprintf(`
 						{
 							"envelopes": {
 								"batch": [
@@ -115,7 +121,8 @@ var _ = FDescribe("logs command", func() {
 								]
 							}
 						}`, latestEnvelopeTimestamp)))
-						Expect(err).ToNot(HaveOccurred())
+							Expect(err).ToNot(HaveOccurred())
+						}
 					case fmt.Sprintf("envelope_types=LOG&start_time=%s", latestEnvelopeTimestampMinusOneSecond):
 						_, err := w.Write([]byte(fmt.Sprintf(`{
 							"envelopes": {
@@ -144,16 +151,41 @@ var _ = FDescribe("logs command", func() {
 				})
 		})
 
-		It("fetches logs with a timestamp just prior to the latest log envelope", func() {
-			username, password := helpers.GetCredentials()
-			session := helpers.CF("login", "-a", server.URL(), "-u", username, "-p", password, "--skip-ssl-validation")
-			Eventually(session).Should(Exit(0))
+		When("there already is an envelope in the log cache", func() {
+			JustBeforeEach(func() {
+				returnEmptyEnvelope = false
+			})
 
-			session = helpers.CF("-v", "logs", "some-fake-app")
-			Eventually(session).Should(Say(logMessage))
-			session.Interrupt()
+			It("fetches logs with a timestamp just prior to the latest log envelope", func() {
+				username, password := helpers.GetCredentials()
+				session := helpers.CF("login", "-a", server.URL(), "-u", username, "-p", password, "--skip-ssl-validation")
+				Eventually(session).Should(Exit(0))
 
-			Eventually(session).Should(SatisfyAny(Exit(0), Exit(2), Exit(130)))
+				session = helpers.CF("logs", "some-fake-app")
+				Eventually(session).Should(Say(logMessage))
+				session.Interrupt()
+
+				Eventually(session).Should(Exit(130))
+			})
+		})
+
+		When("there is not yet an envelope in the log cache", func() {
+			JustBeforeEach(func() {
+				returnEmptyEnvelope = true
+			})
+
+			// TODO: the case where log-cache has no envelopes yet may be "special": we may want to switch to "start from your oldest envelope" approach.
+			It("retries until there is an initial envelope, and then fetches logs with a timestamp just prior to the latest log envelope", func() {
+				username, password := helpers.GetCredentials()
+				session := helpers.CF("login", "-a", server.URL(), "-u", username, "-p", password, "--skip-ssl-validation")
+				Eventually(session).Should(Exit(0))
+
+				session = helpers.CF("logs", "some-fake-app")
+				Eventually(session).Should(Say(logMessage))
+				session.Interrupt()
+
+				Eventually(session).Should(Exit(130))
+			})
 		})
 	})
 })
