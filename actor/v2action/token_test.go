@@ -35,13 +35,14 @@ var _ = Describe("Token Actions", func() {
 			accessToken, err = actor.RefreshAccessToken("existing-refresh-token")
 		})
 
-		When("the token is invalid", func() {
+		When("the access token is invalid", func() {
 			BeforeEach(func() {
 				fakeUAAClient.RefreshAccessTokenReturns(uaa.RefreshedTokens{
 					AccessToken:  "some-token",
 					Type:         "bearer",
 					RefreshToken: "new-refresh-token",
 				}, nil)
+
 				fakeConfig.AccessTokenReturns("im a bad token :(")
 			})
 
@@ -52,7 +53,8 @@ var _ = Describe("Token Actions", func() {
 				Expect(accessToken).To(Equal("bearer some-token"))
 			})
 
-			It("updates the config with the refreshed token", func() {
+			It("updates the config with the refreshed tokens", func() {
+				Expect(err).ToNot(HaveOccurred())
 				Expect(fakeConfig.SetAccessTokenCallCount()).To(Equal(1))
 				Expect(fakeConfig.SetRefreshTokenCallCount()).To(Equal(1))
 				Expect(fakeConfig.SetAccessTokenArgsForCall(0)).To(Equal("bearer some-token"))
@@ -67,25 +69,27 @@ var _ = Describe("Token Actions", func() {
 					AccessToken: "some-token",
 					Type:        "bearer",
 				}, nil)
+
 				notExpiringAccessToken = helpers.BuildTokenString(time.Now().AddDate(5, 0, 0))
 				fakeConfig.AccessTokenReturns(notExpiringAccessToken)
 			})
 
-			It("returns the current token without refreshing it", func() {
-				Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(0))
+			It("returns the current access token without refreshing it", func() {
 				Expect(err).ToNot(HaveOccurred())
+				Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(0))
 				Expect(accessToken).To(Equal(notExpiringAccessToken))
 			})
 
 		})
 
-		When("the token is about to expire", func() {
+		When("the access token is about to expire", func() {
 			BeforeEach(func() {
 				fakeUAAClient.RefreshAccessTokenReturns(uaa.RefreshedTokens{
 					AccessToken:  "some-token",
 					RefreshToken: "new-refresh-token",
 					Type:         "bearer",
 				}, nil)
+
 				expiringAccessToken := helpers.BuildTokenString(time.Now().Add(5))
 				fakeConfig.AccessTokenReturns(expiringAccessToken)
 			})
@@ -97,7 +101,8 @@ var _ = Describe("Token Actions", func() {
 				Expect(accessToken).To(Equal("bearer some-token"))
 			})
 
-			It("updates the config with the refreshed token", func() {
+			It("updates the config with the refreshed tokens", func() {
+				Expect(err).ToNot(HaveOccurred())
 				Expect(fakeConfig.SetAccessTokenCallCount()).To(Equal(1))
 				Expect(fakeConfig.SetRefreshTokenCallCount()).To(Equal(1))
 				Expect(fakeConfig.SetAccessTokenArgsForCall(0)).To(Equal("bearer some-token"))
@@ -119,6 +124,7 @@ var _ = Describe("Token Actions", func() {
 					Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(1))
 					Expect(fakeUAAClient.RefreshAccessTokenArgsForCall(0)).To(Equal("existing-refresh-token"))
 
+					Expect(fakeConfig.SetAccessTokenCallCount()).To(Equal(0))
 					Expect(fakeConfig.SetRefreshTokenCallCount()).To(Equal(0))
 				})
 			})
