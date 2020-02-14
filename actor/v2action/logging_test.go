@@ -436,93 +436,99 @@ var _ = Describe("Logging Actions", func() {
 			}
 		})
 
-		When("the refresh token is good", func() {
+		BeforeEach(func() {
+			fakeConfig.RefreshTokenReturns(helpers.BuildTokenString(time.Now().Add(5 * time.Minute)))
+		})
+
+		When("the access token is not expiring soon", func() {
 			BeforeEach(func() {
-				fakeConfig.RefreshTokenReturns(helpers.BuildTokenString(time.Now().Add(5 * time.Minute)))
+				fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(5 * time.Minute)))
 			})
 
-			When("the access token is not expiring soon", func() {
-				BeforeEach(func() {
-					fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(5 * time.Minute)))
-				})
-
-				It("does not refresh the access token", func() {
-					Expect(err).NotTo(HaveOccurred())
-					Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(0))
-				})
-
+			It("does not refresh the access token", func() {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(0))
 			})
 
-			When("the access token is expiring soon", func() {
-				BeforeEach(func() {
-					fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(30 * time.Second)))
-					fakeUAAClient.RefreshAccessTokenReturns(uaa.RefreshedTokens{
-						AccessToken: helpers.BuildTokenString(time.Now().Add(5 * time.Minute)),
-						Type:        "bearer",
-					}, nil)
-				})
+		})
 
-				It("refreshes the access token", func() {
-					Expect(err).NotTo(HaveOccurred())
-					Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(1))
-				})
+		When("the access token is expiring soon", func() {
+			BeforeEach(func() {
+				fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(30 * time.Second)))
+				fakeUAAClient.RefreshAccessTokenReturns(uaa.RefreshedTokens{
+					AccessToken: helpers.BuildTokenString(time.Now().Add(5 * time.Minute)),
+					Type:        "bearer",
+				}, nil)
 			})
 
-			When("the access token has already expired", func() {
-				BeforeEach(func() {
-					fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(-30 * time.Second)))
-					fakeUAAClient.RefreshAccessTokenReturns(uaa.RefreshedTokens{
-						AccessToken: helpers.BuildTokenString(time.Now().Add(5 * time.Minute)),
-						Type:        "bearer",
-					}, nil)
-				})
+			It("refreshes the access token", func() {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(1))
+			})
+		})
 
-				It("refreshes the access token", func() {
-					Expect(err).NotTo(HaveOccurred())
-					Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(1))
-				})
-
-				When("and the attempt to refresh the access token fails", func() {
-					BeforeEach(func() {
-						fakeUAAClient.RefreshAccessTokenReturns(uaa.RefreshedTokens{}, errors.New("some error"))
-					})
-
-					It("will not refresh the access token", func() {
-						Expect(err).To(MatchError("some error"))
-						Expect(quitNowChannel).To(BeNil())
-					})
-				})
+		When("the access token has already expired", func() {
+			BeforeEach(func() {
+				fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(-30 * time.Second)))
+				fakeUAAClient.RefreshAccessTokenReturns(uaa.RefreshedTokens{
+					AccessToken: helpers.BuildTokenString(time.Now().Add(5 * time.Minute)),
+					Type:        "bearer",
+				}, nil)
 			})
 
-			When("the access token expires while we are streaming logs", func() {
+			It("refreshes the access token", func() {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(1))
+			})
 
+			When("and the attempt to refresh the access token fails", func() {
 				BeforeEach(func() {
-					fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(2 * time.Minute)))
-					fakeConfig.RefreshTokenReturns(helpers.BuildTokenString(time.Now().Add(2 * time.Minute)))
-
-					ticker = make(chan time.Time, 100)
+					fakeUAAClient.RefreshAccessTokenReturns(uaa.RefreshedTokens{}, errors.New("some error"))
 				})
 
-				JustBeforeEach(func() {
-					quitNowChannel, err = actor.ScheduleTokenRefresh(ticker)
+				It("will not refresh the access token", func() {
+					Expect(err).To(MatchError("some error"))
+					Expect(quitNowChannel).To(BeNil())
 				})
+			})
+		})
 
-				It("does not refresh the access token", func() {
-					Expect(err).NotTo(HaveOccurred())
-					Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(0))
+		When("the access token expires while we are streaming logs", func() {
 
-					fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now()))
-					ticker <- time.Time{}
-					Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(1))
+			BeforeEach(func() {
+				fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(2 * time.Minute)))
+				fakeConfig.RefreshTokenReturns(helpers.BuildTokenString(time.Now().Add(2 * time.Minute)))
 
-					ticker <- time.Time{}
-					Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(2))
-				})
+				ticker = make(chan time.Time)
+			})
 
+			JustBeforeEach(func() {
+				quitNowChannel, err = actor.ScheduleTokenRefresh(ticker)
+			})
+
+			It("refreshes the access token", func() {
+				Expect(err).NotTo(HaveOccurred())
+
+				By("not initially refreshing the token when it is unnecessary")
+				Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(0))
+
+				By("refreshing the first access token when it is expiring soon")
+				fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(30 * time.Second)))
+				ticker <- time.Time{}
+				Eventually(fakeUAAClient.RefreshAccessTokenCallCount).Should(Equal(1))
+
+				By("not refreshing the second access token when it is not close to expiry")
+				fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(90 * time.Second)))
+				ticker <- time.Time{}
+				Consistently(fakeUAAClient.RefreshAccessTokenCallCount).Should(Equal(1))
+
+				By("refreshing the second access token when it is near to expiry")
+				fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(30 * time.Second)))
+				ticker <- time.Time{}
+				Eventually(fakeUAAClient.RefreshAccessTokenCallCount).Should(Equal(2))
 			})
 
 		})
 
 	})
 })
-
