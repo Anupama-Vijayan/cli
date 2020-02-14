@@ -59,13 +59,51 @@ var _ = Describe("Logging Actions", func() {
 		var (
 			expectedAppGUID string
 
-			messages      <-chan sharedaction.LogMessage
-			errs          <-chan error
-			stopStreaming context.CancelFunc
+			messages              <-chan sharedaction.LogMessage
+			errs                  <-chan error
+			stopStreaming         context.CancelFunc
+			mostRecentTime        time.Time
+			mostRecentEnvelope    loggregator_v2.Envelope
+			slightlyOlderEnvelope loggregator_v2.Envelope
 		)
 
 		BeforeEach(func() {
 			expectedAppGUID = "some-app-guid"
+			// 2 seconds in the past to get past Walk delay
+			// Walk delay context: https://github.com/cloudfoundry/cli/blob/b8324096a3d5a495bdcae9d1e7f6267ff135fe82/vendor/code.cloudfoundry.org/log-cache/pkg/client/walk.go#L74
+			mostRecentTime = time.Now().Add(-2 * time.Second)
+			mostRecentTimestamp := mostRecentTime.UnixNano()
+			slightlyOlderTimestamp := mostRecentTime.Add(-500 * time.Millisecond).UnixNano()
+
+			mostRecentEnvelope = loggregator_v2.Envelope{
+				Timestamp:  mostRecentTimestamp,
+				SourceId:   "some-app-guid",
+				InstanceId: "some-source-instance",
+				Message: &loggregator_v2.Envelope_Log{
+					Log: &loggregator_v2.Log{
+						Payload: []byte("message-2"),
+						Type:    loggregator_v2.Log_OUT,
+					},
+				},
+				Tags: map[string]string{
+					"source_type": "some-source-type",
+				},
+			}
+
+			slightlyOlderEnvelope = loggregator_v2.Envelope{
+				Timestamp:  slightlyOlderTimestamp,
+				SourceId:   "some-app-guid",
+				InstanceId: "some-source-instance",
+				Message: &loggregator_v2.Envelope_Log{
+					Log: &loggregator_v2.Log{
+						Payload: []byte("message-1"),
+						Type:    loggregator_v2.Log_OUT,
+					},
+				},
+				Tags: map[string]string{
+					"source_type": "some-source-type",
+				},
+			}
 		})
 
 		AfterEach(func() {
@@ -78,59 +116,36 @@ var _ = Describe("Logging Actions", func() {
 		})
 
 		When("receiving logs", func() {
+			var walkStartTime time.Time
+
 			BeforeEach(func() {
-				mostRecentEnvelope := &loggregator_v2.Envelope{
-					// 2 seconds in the past to get past Walk delay
-					Timestamp:  time.Now().Add(-2 * time.Second).UnixNano(),
-					SourceId:   "some-app-guid",
-					InstanceId: "some-source-instance",
-					Message: &loggregator_v2.Envelope_Log{
-						Log: &loggregator_v2.Log{
-							Payload: []byte("message-2"),
-							Type:    loggregator_v2.Log_OUT,
-						},
-					},
-					Tags: map[string]string{
-						"source_type": "some-source-type",
-					},
-				}
-
-				slightlyOlderEnvelope := &loggregator_v2.Envelope{
-					// 3 seconds in the past to get past Walk delay
-					Timestamp:  time.Now().Add(-3 * time.Second).UnixNano(),
-					SourceId:   "some-app-guid",
-					InstanceId: "some-source-instance",
-					Message: &loggregator_v2.Envelope_Log{
-						Log: &loggregator_v2.Log{
-							Payload: []byte("message-1"),
-							Type:    loggregator_v2.Log_OUT,
-						},
-					},
-					Tags: map[string]string{
-						"source_type": "some-source-type",
-					},
-				}
-
 				fakeLogCacheClient.ReadStub = func(
 					ctx context.Context,
 					sourceID string,
 					start time.Time,
 					opts ...logcache.ReadOption,
 				) ([]*loggregator_v2.Envelope, error) {
-					if fakeLogCacheClient.ReadCallCount() > 3 {
+					if fakeLogCacheClient.ReadCallCount() > 2 {
 						stopStreaming()
+						return []*loggregator_v2.Envelope{}, ctx.Err()
 					}
 
 					if (start == time.Time{}) {
-						return []*loggregator_v2.Envelope{mostRecentEnvelope}, ctx.Err()
+						return []*loggregator_v2.Envelope{&mostRecentEnvelope}, ctx.Err()
 					}
 
-					return []*loggregator_v2.Envelope{slightlyOlderEnvelope, mostRecentEnvelope}, ctx.Err()
+					walkStartTime = start
+					return []*loggregator_v2.Envelope{&slightlyOlderEnvelope, &mostRecentEnvelope}, ctx.Err()
 				}
 			})
 
+			It("it starts walking at 1 second previous to the mostRecentEnvelope's time", func() {
+				Eventually(messages).Should(BeClosed())
+				Expect(walkStartTime).To(BeTemporally("~", mostRecentTime.Add(-1*time.Second), time.Millisecond))
+			})
+
 			It("converts them to log messages and passes them through the messages channel", func() {
-				Eventually(messages).Should(HaveLen(4))
+				Eventually(messages).Should(HaveLen(2))
 				var message sharedaction.LogMessage
 				Expect(messages).To(Receive(&message))
 				Expect(message.Message()).To(Equal("message-1"))
@@ -141,60 +156,9 @@ var _ = Describe("Logging Actions", func() {
 			})
 		})
 
-		When("logs are older than 5 seconds", func() {
-			var readStart chan time.Time
-
-			BeforeEach(func() {
-				readStart = make(chan time.Time, 100)
-				fakeLogCacheClient.ReadStub = func(
-					ctx context.Context,
-					sourceID string,
-					start time.Time,
-					opts ...logcache.ReadOption,
-				) ([]*loggregator_v2.Envelope, error) {
-					if fakeLogCacheClient.ReadCallCount() > 1 {
-						stopStreaming()
-					}
-
-					readStart <- start
-
-					return []*loggregator_v2.Envelope{{
-						// 6 seconds in the past to get past Walk delay
-						Timestamp:  time.Now().Add(-6 * time.Second).UnixNano(),
-						SourceId:   "some-app-guid",
-						InstanceId: "some-source-instance",
-						Message: &loggregator_v2.Envelope_Log{
-							Log: &loggregator_v2.Log{
-								Payload: []byte("message-1"),
-								Type:    loggregator_v2.Log_OUT,
-							},
-						},
-						Tags: map[string]string{
-							"source_type": "some-source-type",
-						},
-					}, {
-						// 2 seconds in the past to get past Walk delay
-						Timestamp:  time.Now().Add(-2 * time.Second).UnixNano(),
-						SourceId:   "some-app-guid",
-						InstanceId: "some-source-instance",
-						Message: &loggregator_v2.Envelope_Log{
-							Log: &loggregator_v2.Log{
-								Payload: []byte("message-2"),
-								Type:    loggregator_v2.Log_OUT,
-							},
-						},
-						Tags: map[string]string{
-							"source_type": "some-source-type",
-						},
-					}}, ctx.Err()
-				}
-			})
-
-			It("ignores them", func() {
-				Eventually(readStart).Should(Receive(BeTemporally("~", time.Now().Add(-5*time.Second), time.Second)))
-			})
-		})
-
+		// It is unclear what this is testing
+		// Because the sentinel envelope is necessary, we should add testing for a situation where no sentinel is provided
+		// This test will not pass without the sentinel envelope
 		When("cancelling log streaming", func() {
 			BeforeEach(func() {
 				fakeLogCacheClient.ReadStub = func(
@@ -203,6 +167,9 @@ var _ = Describe("Logging Actions", func() {
 					start time.Time,
 					opts ...logcache.ReadOption,
 				) ([]*loggregator_v2.Envelope, error) {
+					if (start == time.Time{}) {
+						return []*loggregator_v2.Envelope{&mostRecentEnvelope}, ctx.Err()
+					}
 					return nil, ctx.Err()
 				}
 			})
@@ -213,7 +180,7 @@ var _ = Describe("Logging Actions", func() {
 			})
 		})
 
-		Describe("log cache error", func() {
+		FDescribe("log cache error", func() {
 			BeforeEach(func() {
 				fakeLogCacheClient.ReadStub = func(
 					ctx context.Context,

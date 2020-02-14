@@ -151,6 +151,7 @@ func GetStreamingLogs(appGUID string, client LogCacheClient) (<-chan LogMessage,
 				time.Sleep(time.Second)
 			}
 		}
+		walkStartTime := mostRecentEnvelopes[0].Timestamp - time.Second.Nanoseconds()
 
 		logcache.Walk(
 			ctx,
@@ -169,7 +170,7 @@ func GetStreamingLogs(appGUID string, client LogCacheClient) (<-chan LogMessage,
 				return true
 			}),
 			client.Read,
-			logcache.WithWalkStartTime(time.Unix(0, mostRecentEnvelopes[0].Timestamp-time.Second.Nanoseconds())),
+			logcache.WithWalkStartTime(time.Unix(0, walkStartTime)),
 			logcache.WithWalkEnvelopeTypes(logcache_v1.EnvelopeType_LOG),
 			logcache.WithWalkBackoff(newCliRetryBackoff(retryInterval, retryCount)),
 			logcache.WithWalkLogger(log.New(channelWriter{
