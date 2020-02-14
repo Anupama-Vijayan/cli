@@ -3,7 +3,6 @@ package v2action_test
 import (
 	"context"
 	"errors"
-	"github.com/SermoDigital/jose/jws"
 	"time"
 
 	"code.cloudfoundry.org/cli/actor/sharedaction"
@@ -11,6 +10,8 @@ import (
 	. "code.cloudfoundry.org/cli/actor/v2action"
 	"code.cloudfoundry.org/cli/actor/v2action/v2actionfakes"
 	"code.cloudfoundry.org/cli/api/cloudcontroller/ccv2"
+	"code.cloudfoundry.org/cli/api/uaa"
+	"code.cloudfoundry.org/cli/integration/helpers"
 	"code.cloudfoundry.org/go-loggregator/rpc/loggregator_v2"
 	logcache "code.cloudfoundry.org/log-cache/pkg/client"
 	"github.com/cloudfoundry/sonde-go/events"
@@ -22,12 +23,14 @@ var _ = Describe("Logging Actions", func() {
 	var (
 		actor                     *Actor
 		fakeCloudControllerClient *v2actionfakes.FakeCloudControllerClient
+		fakeUAAClient             *v2actionfakes.FakeUAAClient
 		fakeConfig                *v2actionfakes.FakeConfig
-		fakeLogCacheClient        *sharedactionfakes.FakeLogCacheClient
+
+		fakeLogCacheClient *sharedactionfakes.FakeLogCacheClient
 	)
 
 	BeforeEach(func() {
-		actor, fakeCloudControllerClient, _, fakeConfig = NewTestActor()
+		actor, fakeCloudControllerClient, fakeUAAClient, fakeConfig = NewTestActor()
 		fakeLogCacheClient = new(sharedactionfakes.FakeLogCacheClient)
 		fakeConfig.AccessTokenReturns("AccessTokenForTest")
 	})
@@ -421,18 +424,75 @@ var _ = Describe("Logging Actions", func() {
 			quitNowChannel chan bool
 			err            error
 		)
+
 		JustBeforeEach(func() {
 			quitNowChannel, err = actor.ScheduleTokenRefresh()
 		})
 
-		When("the refresh token is bad", func() {
+		AfterEach(func() {
+			if quitNowChannel != nil {
+				quitNowChannel <- true
+			}
+		})
+
+		When("the refresh token is good", func() {
 			BeforeEach(func() {
-				fakeConfig.RefreshTokenReturns("bad refresh token")
+				fakeConfig.RefreshTokenReturns(helpers.BuildTokenString(time.Now().Add(5 * time.Minute)))
 			})
-			It("will not refresh the access token", func() {
-				Expect(err).To(MatchError(jws.ErrNotCompact))
-				Expect(quitNowChannel).To(BeNil())
+
+			When("the access token is not expiring soon", func() {
+				BeforeEach(func() {
+					fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(5 * time.Minute)))
+				})
+
+				It("does not refresh the access token", func() {
+					Expect(err).NotTo(HaveOccurred())
+					Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(0))
+				})
+
 			})
+
+			When("the access token is expiring soon", func() {
+				BeforeEach(func() {
+					fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(30 * time.Second)))
+					fakeUAAClient.RefreshAccessTokenReturns(uaa.RefreshedTokens{
+						AccessToken: helpers.BuildTokenString(time.Now().Add(5 * time.Minute)),
+						Type:        "bearer",
+					}, nil)
+				})
+
+				It("refreshes the access token", func() {
+					Expect(err).NotTo(HaveOccurred())
+					Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(1))
+				})
+			})
+
+			When("the access token has already expired", func() {
+				BeforeEach(func() {
+					fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(-30 * time.Second)))
+					fakeUAAClient.RefreshAccessTokenReturns(uaa.RefreshedTokens{
+						AccessToken: helpers.BuildTokenString(time.Now().Add(5 * time.Minute)),
+						Type:        "bearer",
+					}, nil)
+				})
+
+				It("refreshes the access token", func() {
+					Expect(err).NotTo(HaveOccurred())
+					Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(1))
+				})
+
+				When("and the attempt to refresh the access token fails", func() {
+					BeforeEach(func() {
+						fakeUAAClient.RefreshAccessTokenReturns(uaa.RefreshedTokens{}, errors.New("some error"))
+					})
+
+					It("will not refresh the access token", func() {
+						Expect(err).To(MatchError("some error"))
+						Expect(quitNowChannel).To(BeNil())
+					})
+				})
+			})
+
 		})
 
 	})
