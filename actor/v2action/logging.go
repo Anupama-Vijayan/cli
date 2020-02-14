@@ -52,7 +52,7 @@ func (actor Actor) GetStreamingLogsForApplicationByNameAndSpace(appName string, 
 	return messages, logErrs, stopStreaming, allWarnings, err
 }
 
-func (actor Actor) ScheduleTokenRefresh() (chan bool, error) {
+func (actor Actor) ScheduleTokenRefresh(tickerChan <-chan time.Time) (chan bool, error) {
 	accessTokenString, err := actor.RefreshAccessToken(actor.Config.RefreshToken())
 	if err != nil {
 		return nil, err
@@ -75,11 +75,14 @@ func (actor Actor) ScheduleTokenRefresh() (chan bool, error) {
 	quitNowChannel := make(chan bool, 1)
 
 	go func() {
-		ticker := time.NewTicker(timeToRefresh)
-		defer ticker.Stop()
+		if tickerChan == nil {
+			ticker := time.NewTicker(timeToRefresh)
+			defer ticker.Stop()
+			tickerChan = ticker.C
+		}
 		for {
 			select {
-			case <-ticker.C:
+			case <-tickerChan:
 				_, err := actor.RefreshAccessToken(actor.Config.RefreshToken())
 				if err != nil {
 					panic(err)

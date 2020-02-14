@@ -422,11 +422,12 @@ var _ = Describe("Logging Actions", func() {
 	Describe("ScheduleTokenRefresh", func() {
 		var (
 			quitNowChannel chan bool
+			ticker         chan time.Time
 			err            error
 		)
 
 		JustBeforeEach(func() {
-			quitNowChannel, err = actor.ScheduleTokenRefresh()
+			quitNowChannel, err = actor.ScheduleTokenRefresh(nil)
 		})
 
 		AfterEach(func() {
@@ -493,7 +494,35 @@ var _ = Describe("Logging Actions", func() {
 				})
 			})
 
+			When("the access token expires while we are streaming logs", func() {
+
+				BeforeEach(func() {
+					fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now().Add(2 * time.Minute)))
+					fakeConfig.RefreshTokenReturns(helpers.BuildTokenString(time.Now().Add(2 * time.Minute)))
+
+					ticker = make(chan time.Time, 100)
+				})
+
+				JustBeforeEach(func() {
+					quitNowChannel, err = actor.ScheduleTokenRefresh(ticker)
+				})
+
+				It("does not refresh the access token", func() {
+					Expect(err).NotTo(HaveOccurred())
+					Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(0))
+
+					fakeConfig.AccessTokenReturns(helpers.BuildTokenString(time.Now()))
+					ticker <- time.Time{}
+					Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(1))
+
+					ticker <- time.Time{}
+					Expect(fakeUAAClient.RefreshAccessTokenCallCount()).To(Equal(2))
+				})
+
+			})
+
 		})
 
 	})
 })
+
